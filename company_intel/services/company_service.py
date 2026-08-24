@@ -1,13 +1,19 @@
 from __future__ import annotations
 from ..crawlers.twse import resolve_company
 from ..config import Settings
+from ..company_registry import resolve_international
 
 def make_news_keywords(company: dict, user_keywords: str = "") -> list[str]:
     base = [
         company.get("short_name", ""),
         company.get("company_name", ""),
+        company.get("symbol", ""),
+        *company.get("news_keywords", []),
     ]
-    extra = [x.strip() for x in user_keywords.replace("；", "|").replace(",", "|").split("|")]
+    extra = [
+        x.strip()
+        for x in user_keywords.replace("；", "|").replace(",", "|").split("|")
+    ]
     out = []
     for x in base + extra:
         if x and x not in out:
@@ -15,22 +21,55 @@ def make_news_keywords(company: dict, user_keywords: str = "") -> list[str]:
     return out
 
 def resolve(keyword: str, settings: Settings) -> dict:
-    company = resolve_company(keyword, settings)
+    raw = keyword.strip()
+
+    intl = resolve_international(raw)
+    if intl:
+        return intl
+
+    # 支援 9904.TW
+    upper = raw.upper()
+    if upper.endswith(".TW"):
+        raw = raw[:-3].strip()
+
+    parts = raw.split(maxsplit=1)
+    stock_hint = parts[0] if parts and parts[0].isdigit() else None
+    name_hint = parts[1].strip() if len(parts) > 1 else ""
+
+    search_key = stock_hint or raw
+    company = resolve_company(search_key, settings)
     if company:
+        company.update({
+            "symbol": f'{company["stock_id"]}.TW',
+            "currency": "TWD",
+            "exchange": "TWSE",
+            "data_profile": "tw_monthly_revenue",
+        })
         return company
 
-    # 若非上市公司或 OpenAPI 查不到，允許直接輸入「股票代號 公司名稱」。
-    parts = keyword.strip().split(maxsplit=1)
-    if parts and parts[0].isdigit():
-        stock_id = parts[0]
-        name = parts[1] if len(parts) > 1 else parts[0]
+    if name_hint:
+        company = resolve_company(name_hint, settings)
+        if company:
+            company.update({
+                "symbol": f'{company["stock_id"]}.TW',
+                "currency": "TWD",
+                "exchange": "TWSE",
+                "data_profile": "tw_monthly_revenue",
+            })
+            return company
+
+    if stock_hint:
+        name = name_hint or stock_hint
         return {
-            "stock_id": stock_id,
+            "stock_id": stock_hint,
+            "symbol": f"{stock_hint}.TW",
             "company_name": name,
             "short_name": name,
-            "market": "未知",
+            "market": "TW",
+            "exchange": "TWSE",
             "industry": "",
+            "currency": "TWD",
+            "data_profile": "tw_monthly_revenue",
         }
-    raise LookupError(
-        f"找不到公司：{keyword}。可改輸入「股票代號 公司名稱」，例如：9904 寶成。"
-    )
+
+    raise LookupError(f"找不到公司：{keyword}")

@@ -1,0 +1,28 @@
+[project]
+name = "company-intelligence"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Gavin.Huang", email = "gavin.huang13@pouchen.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anyio>=4.14.2",
+    "blinker>=1.9.0",
+    "bs4>=0.0.2",
+    "certifi>=2026.7.22",
+    "feedparser>=6.0.14",
+    "html5lib>=1.1",
+    "playwright>=1.62.0",
+    "pypdf>=6.16.2",
+    "streamlit>=1.62.0",
+    "yfinance>=1.6.0",
+]
+
+[project.scripts]
+company-intelligence = "company_intelligence:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"

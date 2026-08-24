@@ -1,0 +1,9 @@
+{
+  "request_timeout": 20,
+  "user_agent": "Mozilla/5.0 CompanyIntelligence/1.0",
+  "google_news": {
+    "language": "zh-TW",
+    "country": "TW",
+    "ceid": "TW:zh-Hant"
+  }
+}

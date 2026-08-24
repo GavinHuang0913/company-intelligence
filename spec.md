@@ -1,6 +1,6 @@
 # Company Intelligence 系統規格書 (spec.md)
 
-> **版本**：1.0.0  
+> **版本**：1.15.0 (v15)  
 > **開發模式**：Spec-Driven Development (SDD)  
 > **狀態**：Active  
 
@@ -8,13 +8,14 @@
 
 ## 1. 專案概觀 (System Overview & Vision)
 
-`Company Intelligence` 是一個專為台灣股市（上市 SII / 上櫃 OTC）公司設計的財務與新聞情報自動化收集與分析系統。
+`Company Intelligence` 是一個跨市場（台股 SII/OTC、港股 HKEX、陸股 SZSE）鞋業與體育用品公司之財務與新聞情報自動化收集與分析系統。
 
 ### 1.1 核心目標
-1. **自動化資料收集**：整合公開資訊觀測站（MOPS）、臺灣證券交易所 (TWSE) OpenAPI 與 Google News RSS。
-2. **結構化資料儲存**：建立 SQLite 本地資料庫，維護歷史月營收與新聞索引紀錄。
-3. **靈活雙介面**：提供自動化 CLI 命令與視覺化 Streamlit 儀表板。
-4. **規範驅動開發 (SDD)**：以明確的介面合約、資料模型與模組劃分，確保系統具備良好可維護性與未來擴充性。
+1. **多來源自動化資料收集**：整合 FinMind API、TWSE OpenAPI、MOPS 歷史 POST 查詢、Playwright 自動化瀏覽器（裕元 IR）、Pou Sheng 官方 IR、AKShare/Eastmoney、Yahoo Finance 與 Google News RSS。
+2. **統一貨幣與單位規格**：本地 SQLite DB 統一儲存公司報告幣別之「元」（TWD、CNY、USD），搭配自動化 Schema Migration。
+3. **Canonical Symbol 識別**：採用標準化 Symbol (如 `9904.TW`、`1836.HK`、`300979.SZ`、`3813.HK`、`0551.HK`) 進行跨市場公司統一識別與路由。
+4. **靈活雙介面與持久化設定**：提供 CLI 命令與 Streamlit 雙 Tab 儀表板，支援動態顯示單位切換（元/千元/百萬元/億元）與下拉選單持久化 (`data/company_options.json`)。
+5. **規範驅動開發 (SDD)**：以明確的介面合約、資料模型與模組劃分，確保系統具備良好可維護性與未來擴充性。
 
 ---
 
@@ -27,17 +28,24 @@ flowchart TD
     subgraph UI_CLI [使用者介面層]
         CLI[main.py CLI]
         ST[app.py Streamlit Dashboard]
+        OPT[data/company_options.json]
     end
 
     subgraph ServiceLayer [服務層]
-        Collector[collector.py :: collect]
-        Resolver[company_service.py :: resolve]
+        Collector[services/collector.py :: collect]
+        Resolver[services/company_service.py]
+        Registry[company_registry.py :: Canonical Symbol]
     end
 
     subgraph CrawlerLayer [資料抓取層]
-        TWSE[crawlers/twse.py :: fetch_company_info]
-        MOPS[crawlers/mops_monthly.py :: fetch_monthly_revenue]
-        GNews[crawlers/google_news.py :: fetch_news]
+        FinMind[crawlers/finmind.py :: FinMind API]
+        TWSE[crawlers/twse.py :: TWSE OpenAPI]
+        MOPS[crawlers/mops_monthly.py :: MOPS POST Crawl]
+        PouSheng[crawlers/pousheng.py :: Pou Sheng IR]
+        YueYuen[crawlers/yueyuen_official.py :: Playwright Browser Crawler]
+        Huali[crawlers/huali.py :: AKShare/Eastmoney]
+        YFinance[crawlers/yfinance_financial.py :: Yahoo Finance]
+        GNews[crawlers/google_news.py :: Google News RSS + Filtering]
     end
 
     subgraph StorageLayer [資料儲存層]
@@ -46,9 +54,16 @@ flowchart TD
 
     CLI --> Collector
     ST --> Collector
+    ST <--> OPT
     Collector --> Resolver
+    Resolver --> Registry
     Resolver --> TWSE
+    Collector --> FinMind
     Collector --> MOPS
+    Collector --> PouSheng
+    Collector --> YueYuen
+    Collector --> Huali
+    Collector --> YFinance
     Collector --> GNews
     Collector --> DB
 ```
@@ -58,61 +73,57 @@ flowchart TD
 | 模組路徑 | 主要類別 / 函式 | 模組職責描述 |
 | :--- | :--- | :--- |
 | `company_intel/config.py` | `Settings`, `load_settings` | 載入並維護全域設定（預設 Timeout, User-Agent, DB 路徑等） |
-| `company_intel/db.py` | `connect`, `upsert_*` | 初始化 SQLite DB Schema (WAL Mode)，提供冪等（Upsert）寫入操作 |
-| `company_intel/crawlers/twse.py` | `fetch_company_info` | 透過 TWSE OpenAPI 解析上市/上櫃公司代號、全名與簡稱 |
-| `company_intel/crawlers/mops_monthly.py` | `fetch_monthly_revenue` | 解析 MOPS 歷史靜態月營收 HTML 頁面並提取營收數據與 YoY |
-| `company_intel/crawlers/google_news.py` | `fetch_news`, `build_query` | 組立日期範圍與關鍵字之 Google News RSS URL 並解析 XML 條目 |
-| `company_intel/services/company_service.py` | `resolve`, `make_news_keywords` | 模糊輸入解析（代號/名稱對照），生成新聞關鍵字組合 |
-| `company_intel/services/collector.py` | `collect` | 協調公司解析、營收爬蟲、新聞爬蟲與 DB 存檔之主工作流程 |
+| `company_intel/company_registry.py` | `INTERNATIONAL_COMPANIES`, `resolve_international` | 維護國際公司定義與 Canonical Symbol (`9904.TW`, `1836.HK`, `300979.SZ`, `3813.HK`, `0551.HK`) |
+| `company_intel/db.py` | `connect`, `upsert_*`, migration | 初始化 SQLite DB (WAL Mode)，維護表結構變更與單位正規化 Migration |
+| `company_intel/crawlers/finmind.py` | `fetch_finmind_monthly_revenue` | 抓取台灣股票 2002 至今之歷史月營收並計算 MoM / YoY / 累計值 |
+| `company_intel/crawlers/twse.py` | `fetch_company_info`, `fetch_twse_latest_revenue` | 透過 TWSE OpenAPI 解析上市/上櫃公司代號與當月最新營收 |
+| `company_intel/crawlers/mops_monthly.py` | `fetch_mops_monthly_revenue` | 以 POST 方式查詢 MOPS 歷史月營收單一公司頁面 (Fallback 來源) |
+| `company_intel/crawlers/pousheng.py` | `fetch_pousheng_monthly_revenue` | 解析寶勝國際 (3813.HK) 官方 IR 月收益公告 |
+| `company_intel/crawlers/yueyuen_official.py` | `fetch_yueyuen_official_revenue` | 使用 Playwright Chromium 渲染載入裕元工業 (0551.HK) 官網 DIV/grid 數據 |
+| `company_intel/crawlers/huali.py` | `fetch_huali_financials` | 透過 AKShare / Eastmoney 抓取華利集團 (300979.SZ) 三大財務報表 |
+| `company_intel/crawlers/yfinance_financial.py` | `fetch_yfinance_financials` | 使用 Yahoo Finance 抓取港股/國際公司財務報表 Fallback |
+| `company_intel/crawlers/google_news.py` | `fetch_news` | 建立 Google News RSS Query，結合雙層降噪（Query Exclusion + Title Filter） |
+| `company_intel/services/company_service.py` | `resolve_company` | 解析名稱/代號/Symbol，自動對接台灣公司與國際公司 Registry |
+| `company_intel/services/collector.py` | `collect` | 協調公司解析、營收/財報路由、新聞抓取與 DB 寫入 |
 
 ---
 
 ## 3. 功能規格 (Functional Specifications)
 
-### 3.1 公司解析規格 (`CompanyResolver`)
-- **輸入**：使用者輸入之字串（例如 `"9904"`、`"寶成"` 或 `"9904 寶成"`）。
-- **行為**：
-  1. 優先比對數字股票代號（例如提取 `9904`）。
-  2. 若具備股票代號，調用 TWSE OpenAPI (`t187ap03_L`) 取得完整名稱與簡稱。
-  3. 若 OpenAPI 無回應或非上市公司，則使用預設規則分割 `[股票代號] [公司名稱]`。
-- **輸出**：標準 `company` 字典：
-  ```json
-  {
-    "stock_id": "9904",
-    "company_name": "寶成工業股份有限公司",
-    "short_name": "寶成",
-    "market": "sii",
-    "industry": "製鞋業"
-  }
-  ```
+### 3.1 Canonical Symbol 與公司路由規格
+- **支援主要公司**：
+  - 寶成 (`9904.TW`)：台灣上市 / TWD
+  - 九興 (`1836.HK`)：港股 / USD
+  - 華利集團 (`300979.SZ`)：深交所 / CNY
+  - 寶勝 (`3813.HK`)：港股 / CNY
+  - 裕元 (`0551.HK`)：港股 / USD
+- **資料路由優先順序**：
+  - 台灣公司 (`.TW`)：FinMind 歷史月營收 -> TWSE OpenAPI 最新快照 -> MOPS POST Fallback
+  - 寶勝 (`3813.HK`)：Pou Sheng 官方 IR 月收益 -> Yahoo Finance
+  - 裕元 (`0551.HK`)：Yue Yuen 官方 IR (Playwright 渲染 DIV/grid 解析) -> HKEX Fallback -> Yahoo Finance
+  - 華利 (`300979.SZ`)：AKShare / Eastmoney 財報 -> Yahoo Finance Fallback
+  - 所有公司：Google News RSS (發布日期排序 + 關鍵字排除與過濾)
 
-### 3.2 MOPS 月營收爬蟲規格 (`MOPSMonthlyCrawler`)
-- **目標 URL**：
-  - 上市 (sii)：`https://mops.twse.com.tw/nas/t21/sii/t21sc03_{民國年}_{月}.html`
-  - 上櫃 (otc)：`https://mops.twse.com.tw/nas/t21/otc/t21sc03_{民國年}_{月}.html`
-- **解析邏輯**：
-  - HTML 表格解析（使用 `BeautifulSoup` 或 `pandas.read_html`）。
-  - 提取：當月營收、去年當月營收、月增率/年增率 (YoY)、當月累計營收、去年累計營收、累計 YoY、備註。
-- **單位規範**：原始金額為**新台幣仟元**。
-- **容錯模式**：`market="auto"` 時依序嘗試 `sii` 與 `otc` 頁面。
+### 3.2 數據金額單位規範 (Unit Normalization)
+- **資料庫保存標準**：所有 `monthly_revenue` 與 `financial_reports` 之金額欄位統一儲存為**「原始報告幣別之元」**（如 TWD 元、CNY 元、USD 元）。
+- **自動 Migration (`schema_migrations`)**：舊版以「千元」儲存之 MOPS/TWSE 資料，系統啟動時透過 `20260824_normalize_monthly_revenue_to_twd_v1` 自動乘 1000 正規化。
+- **Streamlit 視覺化換算**：UI 提供「元 / 千元 (預設) / 百萬元 / 億元」動態換算，僅用於前端顯示，不改變 DB 底層資料。
 
-### 3.3 Google News RSS 爬蟲規格 (`GoogleNewsCrawler`)
-- **查詢語法 (Query)**：
-  - 包含公司全名或簡稱，結合自訂關鍵字（以 `OR` / `|` 組成）。
-  - 時間範圍限定：`after:{YYYY-MM-01}` 至 `before:{下個月-01}`。
-  - 範例 Query: `("寶成" OR "寶成工業股份有限公司") AND (Nike OR adidas) after:2026-07-01 before:2026-08-01`
-- **解析內容**：新聞標題 (Title)、發布時間 (Publish Date)、新聞來源 (Source)、連結 (URL)。
+### 3.3 Google News 降噪與日期卡控
+- **日期範圍**：預設保留所選年月往前延伸 3 個月（例如選 2026/07，範圍為 2026/05/01 ~ 2026/07/31）。
+- **裕元/寶成降噪**：Query 與 Python 端自動排除無關新聞（如「裕元花園酒店」、「餐廳」、「龍蝦」、「下午茶」、「粽」、「合唱」等）。
+- **排序**：預設依 `publish_date` 由新到舊排序，UI 提供「最新 → 最舊」與「最舊 → 最新」切換。
 
 ### 3.4 資料庫與 Data Contracts
-資料庫使用 SQLite，啟用 `PRAGMA journal_mode=WAL;`。
 
 #### Schema 1: `companies` 表格
 | 欄位名稱 | 型態 | 主鍵/約束 | 說明 |
 | :--- | :--- | :--- | :--- |
-| `stock_id` | TEXT | PRIMARY KEY | 股票代號 (例如 "9904") |
+| `stock_id` | TEXT | PRIMARY KEY | 股票代號 (例如 "9904", "0551") |
+| `symbol` | TEXT | | Standard Canonical Symbol (例如 "9904.TW", "0551.HK") |
 | `company_name` | TEXT | NOT NULL | 公司全名 |
 | `short_name` | TEXT | | 公司簡稱 |
-| `market` | TEXT | | 市場類別 (sii / otc) |
+| `market` | TEXT | | 市場類別 (TW, HK, CN-SZ) |
 | `industry` | TEXT | | 產業別 |
 | `news_keywords` | TEXT | | 關聯搜尋關鍵字 (| 分隔) |
 | `updated_at` | TEXT | DEFAULT CURRENT_TIMESTAMP | 更新時間 |
@@ -121,20 +132,48 @@ flowchart TD
 | 欄位名稱 | 型態 | 主鍵/約束 | 說明 |
 | :--- | :--- | :--- | :--- |
 | `stock_id` | TEXT | PRIMARY KEY (1/3) | 股票代號 |
+| `symbol` | TEXT | | Canonical Symbol |
 | `year` | INTEGER | PRIMARY KEY (2/3) | 西元年份 (例如 2026) |
 | `month` | INTEGER | PRIMARY KEY (3/3) | 月份 (1~12) |
 | `company_name` | TEXT | | 抓取當時之公司名稱 |
-| `revenue` | REAL | | 當月營收（仟元） |
-| `revenue_last_year` | REAL | | 去年同期營收（仟元） |
-| `yoy` | REAL | | 營收年增率 (%) |
-| `accumulated_revenue` | REAL | | 累計營收（仟元） |
-| `accumulated_last_year` | REAL | | 去年累計營收（仟元） |
+| `revenue` | REAL | | 當月營收（「元」） |
+| `previous_month_revenue`| REAL | | 上月營收（「元」） |
+| `revenue_last_year` | REAL | | 去年同期營收（「元」） |
+| `mom` | REAL | | 月增率 (%) |
+| `yoy` | REAL | | 年增率 (%) |
+| `accumulated_revenue` | REAL | | 累計營收（「元」） |
+| `accumulated_last_year` | REAL | | 去年累計營收（「元」） |
 | `accumulated_yoy` | REAL | | 累計年增率 (%) |
+| `currency` | TEXT | | 貨幣 (TWD, CNY, USD) |
+| `amount_unit` | TEXT | | 金額單位 (TWD, CNY, USD) |
+| `source_type` | TEXT | | 資料來源標記 (finmind_historical, twse_openapi, mops, pousheng_ir, yueyuen_official 等) |
 | `note` | TEXT | | 備註說明 |
 | `source_url` | TEXT | | 資料來源網址 |
 | `fetched_at` | TEXT | DEFAULT CURRENT_TIMESTAMP | 抓取時間 |
 
-#### Schema 3: `news` 表格
+#### Schema 3: `financial_reports` 表格
+| 欄位名稱 | 型態 | 主鍵/約束 | 說明 |
+| :--- | :--- | :--- | :--- |
+| `stock_id` | TEXT | PRIMARY KEY (1/2) | 股票代號 |
+| `period_end` | TEXT | PRIMARY KEY (2/2) | 報告期結束日 (例如 "2026-06-30") |
+| `symbol` | TEXT | | Canonical Symbol |
+| `company_name` | TEXT | | 公司名稱 |
+| `year` | INTEGER | | 西元年份 |
+| `period_type` | TEXT | | 報告類型 (Q1, H1, Q3, FY) |
+| `currency` | TEXT | | 貨幣 |
+| `revenue` | REAL | | 營業收入 |
+| `operating_profit` | REAL | | 營業利潤 |
+| `net_profit` | REAL | | 淨利潤 |
+| `eps` | REAL | | 每股盈餘 |
+| `total_assets` | REAL | | 總資產 |
+| `total_liabilities` | REAL | | 總負債 |
+| `equity` | REAL | | 股東權益 |
+| `operating_cashflow` | REAL | | 營業現金流 |
+| `source_type` | TEXT | | 來源類型 (huali_akshare, yfinance) |
+| `source_url` | TEXT | | 來源網址 |
+| `fetched_at` | TEXT | DEFAULT CURRENT_TIMESTAMP | 抓取時間 |
+
+#### Schema 4: `news` 表格
 | 欄位名稱 | 型態 | 主鍵/約束 | 說明 |
 | :--- | :--- | :--- | :--- |
 | `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | 自增主鍵 |
@@ -146,31 +185,26 @@ flowchart TD
 | `query` | TEXT | | 爬取時使用的 Query |
 | `fetched_at` | TEXT | DEFAULT CURRENT_TIMESTAMP | 抓取時間 |
 
----
-
-## 4. 非功能性需求 (Non-Functional Requirements)
-
-1. **效能與速率限制 (Rate Limiting & Crawling Etiquette)**：
-   - 爬取 MOPS 靜態 HTML 時，請求間隔至少保持 1 秒，防止 IP 被暫時封鎖。
-2. **錯誤隔離 (Error Isolation)**：
-   - 月營收抓取失敗不影響新聞抓取；新聞抓取失敗不影響營收呈現。
-   - 所有錯誤回傳於 `result["errors"]` 串列中，UI / CLI 正確顯示警示訊息。
-3. **資料防重與冪等性 (Idempotency)**：
-   - DB 使用 `ON CONFLICT DO UPDATE` (SQLite Upsert) 及 `INSERT OR IGNORE`，確保重複執行不產生重複資料。
+#### Schema 5: `schema_migrations` 表格
+| 欄位名稱 | 型態 | 主鍵/約束 | 說明 |
+| :--- | :--- | :--- | :--- |
+| `migration_id` | TEXT | PRIMARY KEY | Migration 唯一識別碼 |
+| `applied_at` | TEXT | DEFAULT CURRENT_TIMESTAMP | 執行時間 |
 
 ---
 
-## 5. 未來擴充階段規格 (Roadmap Specifications)
+## 4. UI 介面與功能規格 (Streamlit Dashboard)
 
-- **Phase 2 (MOPS 季報與重大訊息)**：
-  - 新增 MOPS 綜合損益表、資產負債表爬蟲。
-  - 新增重大訊息 (Material Information) 監測模組。
-- **Phase 3 (AI 新聞去重與情緒摘要)**：
-  - 導入 LLM (Gemini API) 進行新聞標題與內容去重、利多/利空情緒分類與重點摘要。
-- **Phase 4 (Streamlit 多公司比較與圖表)**：
-  - 提供多公司同期營收 YoY 趨勢圖表對比。
-- **Phase 5 (FastAPI REST API & MCP Server)**：
-  - 提供 RESTful API 介面。
-  - 封裝為 MCP (Model Context Protocol) 工具供 AI Agent 自動呼叫。
-- **Phase 6 (Hermes Agent 督導與自動化)**：
-  - 自動監控月營收發布日（每月 1-10 日），自動發起抓取與發送情報通知。
+1. **分頁結構 (Tabs)**：
+   - 📊 **查詢結果 Tab**：顯示當次查詢之月營收指標 (Metric Card)、MoM/YoY、累計營收、財務簡報與 Google News 列表。
+   - 🗄️ **歷史資料庫 Tab**：提供四種篩選條件獨立查詢：
+     - `同公司 + 同年月`
+     - `同公司 + 同年度`
+     - `同公司全部`
+     - `所有公司 + 同年月`（跨公司同年月橫向比對）
+2. **選單與動態新增 (`data/company_options.json`)**：
+   - 預設包含主要寶成、九興、華利、寶勝、裕元、豐泰、鈺齊、中傑、志強、來億等公司選項。
+   - 提供「＋ 新增公司到選項清單」，輸入後自動持久化儲存至 JSON。
+3. **顯示單位選擇器**：
+   - 支援「元」、「千元（預設）」、「百萬元」、「億元」實時換算呈現。
+

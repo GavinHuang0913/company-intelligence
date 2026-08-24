@@ -14,6 +14,7 @@ def main():
     p.add_argument("--db", default="data/company.db")
     p.add_argument("--no-revenue", action="store_true")
     p.add_argument("--no-news", action="store_true")
+    p.add_argument("--news-months", type=int, default=3, help="新聞回溯月數，預設 3")
     args = p.parse_args()
 
     result = collect(
@@ -25,6 +26,7 @@ def main():
         news_keywords=args.keywords,
         fetch_revenue=not args.no_revenue,
         fetch_google_news=not args.no_news,
+        news_months=max(1, args.news_months),
         settings=load_settings(),
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

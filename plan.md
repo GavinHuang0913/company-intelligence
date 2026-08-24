@@ -1,8 +1,8 @@
 # Company Intelligence 開發與執行計畫 (plan.md)
 
-> **版本**：1.0.0  
+> **版本**：1.15.0 (v15)  
 > **開發模式**：Spec-Driven Development (SDD)  
-> **狀態**：In Progress  
+> **狀態**：In Progress (v1 - v15 已完成)  
 
 ---
 
@@ -27,12 +27,18 @@ flowchart LR
 
 ## 2. 里程碑與階段規劃 (Milestones & Roadmap)
 
-| 階段 | 里程碑名稱 | 主要交付物 | 狀態 |
+| 階段 / 版本 | 里程碑名稱 | 主要交付物 | 狀態 |
 | :--- | :--- | :--- | :---: |
-| **Phase 1** | MVP 基礎建設與月營收 + 新聞 | CLI 工具、SQLite WAL DB、MOPS 爬蟲、Google News RSS、Streamlit 儀表板 | `[x]` 已完成 (驗證中) |
-| **Phase 2** | MOPS 季財報與重大訊息 | 綜合損益表 / 資產負債表爬蟲、重大訊息即時爬取與儲存 | `[ ]` 規劃中 |
+| **Phase 1 (v1-v6)** | MVP 基礎建設與月營收 + 新聞 | CLI 工具、SQLite WAL DB、MOPS POST 爬蟲、TWSE OpenAPI、Google News RSS、Streamlit 儀表板 | `[x]` 已完成 |
+| **v7** | 完整歷史月營收改用 FinMind | FinMind API 整合 (2002 至今歷史月營收)、當月/上月/YoY/累計營收自動計算 | `[x]` 已完成 |
+| **v8** | 統一幣別與金額單位 | DB 統一儲存報告幣別「元」、`schema_migrations` 自動轉檔舊資料 (千元→元) | `[x]` 已完成 |
+| **v9-v10** | 雙 Tab 分頁與顯示單位切換 | 📊 查詢結果與 🗄️ 歷史資料庫分頁、顯示單位切換（元/千元/百萬元/億元） | `[x]` 已完成 |
+| **v11-v12** | Canonical Symbol 與國際公司 | 支援 `9904.TW`, `1836.HK`, `300979.SZ`, `3813.HK`, `0551.HK` 跨市場 Symbol 與多幣別 | `[x]` 已完成 |
+| **v13** | 下拉清單持久化與同年月跨公司比對 | `data/company_options.json` 選單與動態新增、`所有公司+同年月` 篩選、新聞降噪 | `[x]` 已完成 |
+| **v14-v15** | Playwright Web 瀏覽器與 DIV/grid 解析 | Playwright Chromium 自動化爬取裕元 IR DIV/grid 畫面、新聞雙層 Hard Filter | `[x]` 已完成 |
+| **Phase 2** | 季財報深度與重大訊息監測 | AKShare/Eastmoney (華利)、Yahoo Finance (港股) 財報整合；重大訊息監控 | `[!]` 部分完成 (財報已整合) |
 | **Phase 3** | AI 新聞去重與情緒摘要 | Gemini LLM 整合、新聞摘要、利多利空分數標記 | `[ ]` 規劃中 |
-| **Phase 4** | Streamlit 高級儀表板 | 多公司同期 YoY 對比圖表、營收歷史走勢分析圖 | `[ ]` 規劃中 |
+| **Phase 4** | Streamlit 高級圖表與對比 | 多公司同期 YoY 對比圖表、營收歷史走勢分析圖 (Plotly/Altair) | `[ ]` 規劃中 |
 | **Phase 5** | FastAPI 與 MCP Server 介面 | RESTful API 服務、Model Context Protocol (MCP) Server 供 AI Agent 呼叫 | `[ ]` 規劃中 |
 | **Phase 6** | Hermes Agent 自動監控 | 建立定時任務、自動觸發月營收抓取與主動通知機制 | `[ ]` 規劃中 |
 
@@ -40,36 +46,41 @@ flowchart LR
 
 ## 3. 詳細任務拆解清單 (Detailed Task Breakdown)
 
-### Phase 1: MVP 基礎設施與單元測試完善 (現階段)
-- [x] **系統基礎架構建置**
+### 已經完成項目 (v1 - v15)
+- [x] **系統基礎架構與核心模組建置 (v1-v6)**
   - [x] 建立 `company_intel/config.py` 設定模組
-  - [x] 建立 `company_intel/db.py` 初始化 SQLite (companies, monthly_revenue, news)
-  - [x] 實作 `crawlers/twse.py` 整合 TWSE OpenAPI 解析公司名稱
-  - [x] 實作 `crawlers/mops_monthly.py` 解析 MOPS 歷史月營收 HTML
-  - [x] 實作 `crawlers/google_news.py` 解析 Google News RSS XML
+  - [x] 建立 `company_intel/db.py` 初始化 SQLite (companies, monthly_revenue, news, financial_reports, schema_migrations)
+  - [x] 實作 `crawlers/twse.py` 整合 TWSE OpenAPI 解析公司名稱與最新營收
+  - [x] 實作 `crawlers/mops_monthly.py` MOPS POST 歷史月營收查詢
+  - [x] 實作 `crawlers/google_news.py` 解析 Google News RSS XML 並結合日期與關鍵字
   - [x] 實作 `services/collector.py` 整合調用與錯誤處置
   - [x] 實作 `main.py` CLI 與 `app.py` Streamlit UI
-- [ ] **測試與驗證覆蓋率提升**
-  - [ ] 補全 `tests/test_crawlers.py` (針對 MOPS HTML 解析使用 mock html 測試)
-  - [ ] 補全 `tests/test_db.py` (測試 SQLite upsert 冪等性)
-  - [ ] 補全 `tests/test_collector.py` (測試部分失敗容錯與錯誤傳遞)
+- [x] **FinMind 歷史營收與單位正規化 (v7-v8)**
+  - [x] 實作 `crawlers/finmind.py` 全量抓取台灣歷史月營收並補全 MoM/YoY/累計值
+  - [x] 實作 DB Migration 機制，將舊有千元資料統一乘 1000 存入 TWD 元
+- [x] **Streamlit UI 進階功能 (v9-v10)**
+  - [x] 設計 📊 查詢結果 與 🗄️ 歷史資料庫 雙 Tab 介面
+  - [x] 實作畫面顯示單位切換器（元、千元、百萬元、億元）
+- [x] **國際公司與 Canonical Symbol (v11-v13)**
+  - [x] 實作 `company_registry.py` 支援 `.TW`, `.HK`, `.SZ` Canonical Symbol 識別
+  - [x] 實作 華利集團 (`300979.SZ`)、寶勝國際 (`3813.HK`)、九興 (`1836.HK`)、裕元 (`0551.HK`) 專屬路由
+  - [x] 實作 `data/company_options.json` 選單載入與動態新增持久化
+  - [x] 實作歷史資料「所有公司 + 同年月」跨公司同期比對功能
+- [x] **Playwright 瀏覽器渲染與新聞降噪 (v14-v15)**
+  - [x] 實作 `crawlers/yueyuen_official.py` 透過 Playwright Chromium 載入裕元 IR 動態 DIV/grid DOM 並解析月營收
+  - [x] 實作 Google News 雙層硬過濾器 (排除酒店/餐飲/龍蝦/合唱等無關報導)
 
 ---
 
-### Phase 2: MOPS 季財報與重大訊息 (Quarterly Financials & Material Info)
-- [ ] **規格制定 (`spec.md`)**
-  - [ ] 定義 `quarterly_financials` (綜合損益表、資產負債表) 資料表 Schema
-  - [ ] 定義 `material_news` (重大訊息) 資料表 Schema
-- [ ] **爬蟲模組擴充**
-  - [ ] 新增 `company_intel/crawlers/mops_financials.py` (季報爬蟲)
-  - [ ] 新增 `company_intel/crawlers/mops_announcements.py` (重大訊息爬蟲)
-- [ ] **資料庫與服務整合**
-  - [ ] 在 `db.py` 新增對應 upsert 邏輯
-  - [ ] 擴充 `collector.py` 支援 `--fetch-financials` 與 `--fetch-announcements`
-- [ ] **Streamlit UI 呈現**
-  - [ ] 新增「季財報 (EPS, 淨利率, 毛利率)」分頁與「重大訊息」列表
+### 下一階段任務 (Phase 2 ~ Phase 6)
 
----
+### Phase 2: 季財報深度與重大訊息擴充
+- [x] **國際公司季報與財務指標**
+  - [x] 新增 `crawlers/huali.py` 抓取華利集團 (300979.SZ) 三大財報
+  - [x] 新增 `crawlers/yfinance_financial.py` 抓取港股財報 Fallback
+- [ ] **MOPS 台股季報與重大訊息**
+  - [ ] 實作 MOPS 綜合損益表、資產負債表、現金流量表爬蟲
+  - [ ] 新增重大訊息 (Material Info) 爬蟲與 DB 表
 
 ### Phase 3: AI 新聞去重與情緒摘要 (LLM Integration)
 - [ ] **規格制定 (`spec.md`)**
@@ -81,22 +92,16 @@ flowchart LR
 - [ ] **UI 擴充**
   - [ ] Streamlit 新增 AI Summary 卡片與重點新聞摘要列
 
----
-
 ### Phase 4: 多公司對比與高級圖表 (Multi-Company Comparison)
 - [ ] **圖表模組建置**
   - [ ] 導入 Plotly / Altair 進行營收與 YoY 雙軸圖表繪製
-  - [ ] 提供同產業多公司 (例如 寶成 vs 豐泰) 營收成長率對比分頁
-
----
+  - [ ] 提供同產業多公司 (例如 寶成 vs 豐泰 vs 裕元) 營收成長率對比分頁
 
 ### Phase 5: FastAPI REST API & MCP Server 介面
 - [ ] **FastAPI 封裝**
   - [ ] 新增 `server.py` 提供 `/api/v1/company/{id}/revenue` 與 `/api/v1/company/{id}/news`
 - [ ] **MCP Server 支援**
   - [ ] 新增 `mcp_server.py` 實作 Context Protocol，讓 AI 代理（如 Antigravity / Claude）直接調用抓取工具
-
----
 
 ### Phase 6: Hermes Agent 自動監控與通知 (Automation & Supervision)
 - [ ] **自動排程監控**
@@ -125,6 +130,8 @@ ruff check company_intel/
 
 ## 5. 風控與反爬蟲應對策略 (Risk & Anti-Blocking Strategy)
 
-1. **User-Agent 隨機化 / 擬真**：在 `Settings` 中配置常見瀏覽器 User-Agent 標頭。
-2. **自動 Delay**：大量連線 MOPS 時自動加上 `time.sleep(1.0 + random.random())`。
-3. **離線與 快取機制 (Caching)**：對於已抓取過的月營收數據（歷史營收不會異動），直接讀取本地 SQLite 避免重複對外請求。
+1. **Playwright 瀏覽器渲染**：針對 JavaScript / AJAX 動態載入頁面（如裕元 IR），使用真實 Chromium 引擎處理。
+2. **User-Agent 隨機化 / 擬真**：在 `Settings` 中配置常見瀏覽器 User-Agent 標頭。
+3. **自動 Delay**：大量連線請求時自動加上 `time.sleep(1.0 + random.random())`。
+4. **離線與 快取機制 (Caching)**：對於已抓取過的月營收數據，直接讀取本地 SQLite 避免重複對外請求。
+

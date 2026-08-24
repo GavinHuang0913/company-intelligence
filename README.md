@@ -1,333 +1,707 @@
-# Company Intelligence 台灣公司財務與新聞情報自動化系統
+# Company Intelligence
 
-[![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
-[![Framework](https://img.shields.io/badge/UI-Streamlit-red.svg)](https://streamlit.io/)
-[![Database](https://img.shields.io/badge/Database-SQLite%20(WAL)-green.svg)](https://www.sqlite.org/)
-[![Development Mode](https://img.shields.io/badge/Development-SDD-orange.svg)](spec.md)
+輸入台灣公司名稱/股票代號與年月，自動抓取：
 
-**Company Intelligence** 是一個專為台灣股市（上市 SII / 上櫃 OTC）公司設計的財務與新聞情報自動化收集、儲存與視覺化分析系統。
+1. 公開資訊觀測站（MOPS）歷史月營收
+2. Google News RSS 當月份公司新聞
+3. 將結果寫入 SQLite
+4. 以 Streamlit Dashboard 顯示
 
-系統自動整合 **公開資訊觀測站（MOPS）歷史月營收**、**臺灣證券交易所 (TWSE) OpenAPI 公司資訊** 與 **Google News RSS 當月新聞**，並將結果存入本地 SQLite 資料庫（WAL 模式），同時提供強大的 **CLI 工具** 與 **Streamlit 視覺化儀表板**。
+> MVP 先專注「月營收 + 新聞」。正式季財報、重大訊息、AI Summary 可作為 Phase 2。
 
----
+## 1. 環境
 
-## 📸 核心功能與亮點 (Key Features)
+建議 Python 3.11 / 3.12。
 
-- 🏢 **智能公司解析 (Company Resolver)**：
-  - 輸入股票代號（如 `9904`）或公司名稱（如 `寶成` / `9904 寶成`），自動透過 TWSE OpenAPI 解析完整公司全名、簡稱與產業別。
-- 📊 **MOPS 歷史月營收自動爬蟲**：
-  - 自動抓取並解析 MOPS 歷史月營收 HTML 靜態報表。
-  - 提取當月營收、去年同期營收、月增率/年增率 (YoY)、當月累計營收、去年累計營收、累計 YoY 與公司備註說明（單位：新台幣仟元）。
-  - 支援 `market="auto"` 自動判定上市 (SII) 或上櫃 (OTC)。
-- 📰 **Google News RSS 定向新聞檢索**：
-  - 自動建立精準日期約束語法（`after:YYYY-MM-01 before:YYYY-MM-01`）與公司名稱關鍵字語法。
-  - 抓取當月發布新聞之標題、來源媒體、發布時間與連結 URL，並支援自訂擴充關鍵字（如 `Nike|adidas|越南|印尼`）。
-- 💾 **SQLite 冪等性持久化儲存**：
-  - 採用 SQLite WAL (Write-Ahead Logging) 高效模式。
-  - 設計 `companies`、`monthly_revenue` 與 `news` 資料表，具備 `ON CONFLICT DO UPDATE / IGNORE` 冪等寫入能力，重複執行不重覆洗洗資料。
-- 🖥️ **雙端介面 (CLI & Streamlit Dashboard)**：
-  - **CLI (main.py)**：適合自動化排程、腳本調用與批次抓取，輸出結構化 JSON。
-  - **Streamlit (app.py)**：直覺美觀的 Web 互動儀表板，即時呈現關鍵指標、新聞表格與歷史 SQLite 資料庫紀錄。
-- 🛡️ **獨立錯誤隔離 (Error Isolation)**：
-  - 營收抓取與新聞抓取獨立執行，單一服務異常不影響其他模組運作，錯誤完整紀錄於回傳結果中。
-
----
-
-## 🏗️ 系統架構與模組設計 (System Architecture)
-
-本專案遵循 **規範驅動開發 (Spec-Driven Development, SDD)** 精神設計，模組劃分清晰且解耦：
-
-```mermaid
-flowchart TD
-    subgraph UI_CLI [使用者介面層]
-        CLI[main.py CLI 命令列]
-        ST[app.py Streamlit 儀表板]
-    end
-
-    subgraph ServiceLayer [服務層]
-        Collector[services/collector.py :: collect]
-        Resolver[services/company_service.py :: resolve]
-    end
-
-    subgraph CrawlerLayer [資料抓取層]
-        TWSE[crawlers/twse.py :: fetch_company_info]
-        MOPS[crawlers/mops_monthly.py :: fetch_monthly_revenue]
-        GNews[crawlers/google_news.py :: fetch_news]
-    end
-
-    subgraph StorageLayer [資料儲存層]
-        DB[db.py SQLite Database data/company.db]
-    end
-
-    CLI --> Collector
-    ST --> Collector
-    Collector --> Resolver
-    Resolver --> TWSE
-    Collector --> MOPS
-    Collector --> GNews
-    Collector --> DB
-```
-
-### 📁 專案目錄結構
-
-```text
-company-intelligence/
-├── README.md                   # 專案說明文件 (本文件)
-├── spec.md                     # 系統規格書 (Spec-Driven Development)
-├── plan.md                     # 開發與執行計畫 / Checklists
-├── requirements.txt            # Python 套件依賴
-├── config.example.json         # 設定檔範例
-├── main.py                     # CLI 命令列入口點
-├── app.py                      # Streamlit 視覺化 Web UI
-├── company_intel/              # 核心套件模組
-│   ├── __init__.py
-│   ├── config.py               # 全域設定載入與維護
-│   ├── db.py                   # SQLite Schema 初始化與 Upsert 操作
-│   ├── crawlers/               # 資料爬蟲層
-│   │   ├── twse.py             # TWSE OpenAPI 公司名稱解析
-│   │   ├── mops_monthly.py     # MOPS 月營收 HTML 爬蟲
-│   │   └── google_news.py      # Google News RSS 爬蟲
-│   └── services/               # 業務邏輯服務層
-│       ├── company_service.py  # 公司代號模糊比對與關鍵字組裝
-│       └── collector.py        # 爬蟲與 DB 寫入的主流程協調器
-├── tests/                      # 單元與整合測試
-│   └── test_imports.py
-└── data/                       # 本地資料庫儲存目錄 (自動建立)
-    └── company.db              # SQLite 資料庫檔案 (WAL 模式)
-```
-
----
-
-## 🚀 快速開始 (Quick Start)
-
-### 1. 環境需求與套件安裝
-
-建議使用 Python 3.11 或 3.12。
-
-#### 使用標準 venv (Windows PowerShell)
+### Windows PowerShell
 
 ```powershell
-# 複製專案與建立虛擬環境
+cd company-intelligence
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# 安裝依賴套件
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-# 建立設定檔
 copy config.example.json config.json
 ```
 
-#### 使用 uv 包管理器
+若使用 uv：
 
 ```powershell
 uv venv
-.\.venv\Scripts\Activate.ps1
+.venv\Scripts\Activate.ps1
 uv pip install -r requirements.txt
 copy config.example.json config.json
 ```
 
-#### Linux / macOS
+## 2. CLI 試跑
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp config.example.json config.json
+寶成 2026/07：
+
+```powershell
+python main.py --company "9904 寶成" --year 2026 --month 7
 ```
 
----
+只抓 Google News：
 
-## 💻 CLI 命令列介面指南 (CLI Usage)
+```powershell
+python main.py --company "9904 寶成" --year 2026 --month 7 --no-revenue
+```
 
-`main.py` 提供極速 CLI 介面，結果以標準 JSON 格式輸出：
+加入新聞關鍵字：
 
-### 常用命令範例
+```powershell
+python main.py --company "9904 寶成" --year 2026 --month 7 --keywords "Nike|adidas|越南|印尼"
+```
 
-1. **基本抓取（寶成 2026 年 7 月份營收 + 新聞）**：
-   ```powershell
-   python main.py --company "9904 寶成" --year 2026 --month 7
-   ```
+如果知道是上櫃：
 
-2. **僅抓取 Google News（跳過營收爬蟲）**：
-   ```powershell
-   python main.py --company "9904 寶成" --year 2026 --month 7 --no-revenue
-   ```
+```powershell
+python main.py --company "XXXX 公司名" --year 2026 --month 7 --market otc
+```
 
-3. **僅抓取月營收（跳過新聞爬蟲）**：
-   ```powershell
-   python main.py --company "9904 寶成" --year 2026 --month 7 --no-news
-   ```
-
-4. **加入自訂新聞關鍵字**（以 `|` 分隔）：
-   ```powershell
-   python main.py --company "9904 寶成" --year 2026 --month 7 --keywords "Nike|adidas|越南|印尼"
-   ```
-
-5. **指定市場類別 (sii 上市 / otc 上櫃)**：
-   ```powershell
-   python main.py --company "XXXX" --year 2026 --month 7 --market otc
-   ```
-
-### CLI 參數一覽表
-
-| 參數 | 必填 | 預設值 | 說明 |
-| :--- | :---: | :---: | :--- |
-| `--company` | 是 | - | 公司股票代號或名稱（例如 `"9904"`、`"寶成"`、`"9904 寶成"`） |
-| `--year` | 是 | - | 抓取年份 (西元年，例如 `2026`) |
-| `--month` | 是 | - | 抓取月份 (`1` ~ `12`) |
-| `--market` | 否 | `auto` | 市場類別：`auto` (自動比對), `sii` (上市), `otc` (上櫃) |
-| `--keywords` | 否 | `""` | 額外 Google News 關鍵字，多個關鍵字以 `\|` 分隔 |
-| `--db` | 否 | `data/company.db` | SQLite 資料庫儲存路徑 |
-| `--no-revenue` | 否 | `False` | 標記此旗標則**不抓取**月營收 |
-| `--no-news` | 否 | `False` | 標記此旗標則**不抓取** Google News |
-
----
-
-## 🌐 Streamlit 視覺化儀表板 (Web Dashboard)
-
-本專案內建 Streamlit 網頁應用程式，適合進行可視化數據分析：
+## 3. Streamlit
 
 ```powershell
 streamlit run app.py
 ```
 
-執行後瀏覽器將自動開啟：
-[http://localhost:8501](http://localhost:8501)
+瀏覽器通常會開：
 
-### 儀表板功能亮點：
-1. **側邊欄條件設定**：支援動態選擇公司、年月、市場、額外新聞關鍵字與抓取切換。
-2. **營收 KPI 卡片**：即時呈現「當月營收」、「YoY 年增率」、「累計營收」與「累計 YoY」，並附有 MOPS 公司備註警示。
-3. **新聞列表 Dataframe**：以表格化呈現新聞日期、媒體來源、新聞標題與點擊直接跳轉的原生 URL 連結。
-4. **歷史 SQLite 資料庫檢視器**：底層即時聯結 `data/company.db` 展示最近 100 筆已存檔之歷史月營收紀錄。
-
----
-
-## ⚙️ 設定檔說明 (`config.json`)
-
-系統會在啟動時載入 `config.json`（若不存在則降級使用預設值）：
-
-```json
-{
-  "request_timeout": 20,
-  "user_agent": "Mozilla/5.0 CompanyIntelligence/1.0",
-  "google_news": {
-    "language": "zh-TW",
-    "country": "TW",
-    "ceid": "TW:zh-Hant"
-  }
-}
+```text
+http://localhost:8501
 ```
 
-- `request_timeout`：HTTP 請求逾時秒數（預設 20 秒）。
-- `user_agent`：請求 MOPS / TWSE / Google News 時帶入之 User-Agent 標頭。
-- `google_news`：RSS 搜尋之語系、國家與區域設定。
+## 4. 資料庫
 
----
+SQLite：
 
-## 🗄️ 資料庫 Schema 與 SQL 查詢 (Database)
+```text
+data/company.db
+```
 
-資料庫預設建立於 `data/company.db`，啟用 SQLite `WAL (Write-Ahead Logging)` 模式以提升併發讀寫效能。
+主要 tables：
 
-### 1. `companies` (公司基本資料表)
-| 欄位 | 型態 | 主鍵 | 說明 |
-| :--- | :--- | :---: | :--- |
-| `stock_id` | TEXT | PRIMARY KEY | 股票代號 (如 `"9904"`) |
-| `company_name` | TEXT | NOT NULL | 公司全名 |
-| `short_name` | TEXT | | 公司簡稱 |
-| `market` | TEXT | | 市場類別 (`sii` / `otc`) |
-| `industry` | TEXT | | 產業類別 (如 `"製鞋業"`) |
-| `news_keywords` | TEXT | | 關聯搜尋關鍵字 (`\|` 分隔) |
-| `updated_at` | TEXT | | 更新時間 |
+- `companies`
+- `monthly_revenue`
+- `news`
 
-### 2. `monthly_revenue` (歷史月營收資料表)
-| 欄位 | 型態 | 主鍵 | 說明 |
-| :--- | :--- | :---: | :--- |
-| `stock_id` | TEXT | PK (1/3) | 股票代號 |
-| `year` | INTEGER | PK (2/3) | 西元年份 (如 `2026`) |
-| `month` | INTEGER | PK (3/3) | 月份 (`1`~`12`) |
-| `company_name` | TEXT | | 抓取當時之公司名稱 |
-| `revenue` | REAL | | 當月營收（仟元） |
-| `revenue_last_year` | REAL | | 去年同期營收（仟元） |
-| `yoy` | REAL | | 營收年增率 (%) |
-| `accumulated_revenue` | REAL | | 累計營收（仟元） |
-| `accumulated_last_year` | REAL | | 去年累計營收（仟元） |
-| `accumulated_yoy` | REAL | | 累計年增率 (%) |
-| `note` | TEXT | | 公司備註說明 |
-| `source_url` | TEXT | | MOPS 來源頁面網址 |
-| `fetched_at` | TEXT | | 抓取時間 |
-
-### 3. `news` (當月新聞索引表)
-| 欄位 | 型態 | 主鍵/約束 | 說明 |
-| :--- | :--- | :---: | :--- |
-| `id` | INTEGER | PK AUTO | 系統自增主鍵 |
-| `stock_id` | TEXT | NOT NULL | 股票代號 |
-| `title` | TEXT | NOT NULL | 新聞標題 |
-| `publish_date` | TEXT | | 新聞發布時間 |
-| `source` | TEXT | | 新聞來源媒體 |
-| `url` | TEXT | UNIQUE(stock_id, url) | 新聞原生網址 (用於去重) |
-| `query` | TEXT | | 爬取時使用的 Search Query |
-| `fetched_at` | TEXT | | 抓取時間 |
-
-### 常用 SQLite 查詢範例
-
-查詢寶成 (9904) 的歷史營收趨勢：
+可用 SQLite CLI：
 
 ```sql
-SELECT year, month, revenue, yoy, accumulated_yoy
+SELECT *
 FROM monthly_revenue
-WHERE stock_id = '9904'
+WHERE stock_id='9904'
 ORDER BY year DESC, month DESC;
 ```
-
-查詢寶成最新抓取的新聞條目：
 
 ```sql
 SELECT publish_date, source, title, url
 FROM news
-WHERE stock_id = '9904'
-ORDER BY publish_date DESC
-LIMIT 20;
+WHERE stock_id='9904'
+ORDER BY publish_date DESC;
 ```
 
----
+## 5. 資料來源策略
 
-## 🧪 自動化測試 (Testing)
+### 公司基本資料
 
-本專案使用 `pytest` 進行單元與整合測試：
+優先使用臺灣證券交易所 OpenAPI：
+
+```text
+https://openapi.twse.com.tw/v1/opendata/t187ap03_L
+```
+
+### 最新上市公司月營收 API
+
+```text
+https://openapi.twse.com.tw/v1/opendata/t187ap05_L
+```
+
+### 歷史月營收
+
+MOPS 歷史靜態報表：
+
+```text
+https://mops.twse.com.tw/nas/t21/sii/t21sc03_{民國年}_{月}.html
+https://mops.twse.com.tw/nas/t21/otc/t21sc03_{民國年}_{月}.html
+```
+
+例如 2024/01：
+
+```text
+https://mops.twse.com.tw/nas/t21/sii/t21sc03_113_1.html
+```
+
+MOPS 可能調整網站結構或限制自動存取，因此 crawler 已獨立封裝；若日後失效，只需要更換 `company_intel/crawlers/mops_monthly.py`。
+
+### Google News RSS
+
+使用 Google News RSS Search，Query 會自動加入：
+
+```text
+("寶成" OR "寶成工業股份有限公司")
+after:2026-07-01
+before:2026-08-01
+```
+
+## 6. 注意
+
+- MOPS 月營收金額通常以「仟元」呈現，Dashboard 目前保存原始數值。
+- 使用公開網站資料時請控制請求頻率，不要高頻爬取。
+- Google News RSS 返回的是新聞索引連結與摘要資料，不代表能直接抓取每家新聞網站全文。
+- 非上市公司若 TWSE 公司基本資料找不到，可直接輸入 `股票代號 公司名稱`。
+- `market=auto` 會依序嘗試上市與上櫃歷史月營收頁。
+
+## 7. 下一階段
+
+建議依序增加：
+
+1. MOPS 季財報（綜合損益表、資產負債表、現金流量表）
+2. MOPS 重大訊息
+3. Google News 去重與分類
+4. AI Summary
+5. Streamlit 多公司比較
+6. FastAPI / MCP
+7. Hermes Supervisor Agent
+
+
+## v2 修正
+
+- 修正輸入 `9904 寶成` 時，公司 resolver 會把整串文字拿去比對而失敗的問題。
+- MOPS 月營收改為先查現行單一公司入口：
+  `https://mops.twse.com.tw/mops/web/t05st10_ifrs`
+- `/nas/t21/...` 僅保留為 fallback。
+- `market=auto` 在公司已解析成上市時，不會再錯誤跑到 OTC。
+
+建議測試：
 
 ```powershell
-pytest -v tests/
+python main.py --company "9904 寶成" --year 2026 --month 7
 ```
 
----
+再測 Streamlit：
 
-## 🛡️ 資料來源策略與禮儀 (Data Strategy & Ethics)
+```powershell
+streamlit run app.py
+```
 
-1. **臺灣證券交易所 (TWSE) OpenAPI**：
-   - 使用公開 openapi `t187ap03_L` 解析公司基礎對照資料。
-2. **公開資訊觀測站 (MOPS)**：
-   - 解析 MOPS 歷史 HTML 靜態月營收報表 (`t21sc03_{民國年}_{月}.html`)。
-   - 爬蟲模組已進行解耦封裝（`company_intel/crawlers/mops_monthly.py`），若 MOPS 改版僅需替換單一檔案。
-   - 請遵循網路爬蟲規範，控制請求頻率。
-3. **Google News RSS**：
-   - 透過 RSS 介面抓取新聞索引，非爬取各新聞媒體全文。
 
----
+## v3 修正
 
-## 🗺️ 未來擴充藍圖 (Roadmap)
+### 月營收
 
-詳細規格請參閱 [`spec.md`](spec.md) 與開發進度 [`plan.md`](plan.md)。
+1. 上市公司查詢時，優先使用 TWSE 官方 OpenAPI `t187ap05_L`。
+2. OpenAPI 只提供最新一期，因此會檢查 `資料年月` 必須與指定年月一致。
+3. 指定歷史月份時，才 fallback 至 MOPS。
+4. `requirements.txt` 已加入 `html5lib`，修正 `pandas.read_html()` parser 缺套件錯誤。
 
-- [x] **Phase 1 (MVP 現狀)**：MOPS 月營收爬蟲 + Google News RSS + SQLite WAL + CLI & Streamlit 雙介面。
-- [ ] **Phase 2 (MOPS 季財報 & 重大訊息)**：新增綜合損益表、資產負債表與重大訊息即時監控。
-- [ ] **Phase 3 (AI 新聞去重與情緒摘要)**：導入 Gemini API 進行新聞標題去重、利多/利空情緒評分與重點摘要。
-- [ ] **Phase 4 ( Streamlit 高級圖表)**：多公司同期 YoY 雙軸對比圖表與產業趨勢走勢圖。
-- [ ] **Phase 5 (FastAPI & MCP Server 介面)**：提供 RESTful API 及 Model Context Protocol (MCP) 介面供 AI Agent 直接調用。
-- [ ] **Phase 6 (Hermes Agent 自動監控)**：排程監控每月營收發布（每月 1-10 日），主動觸發抓取與推播通知。
+### Google News 日期卡控
 
----
+預設以所選年月為截止月，保留最近 3 個完整月份。
 
-## 📄 授權條款 (License)
+例如：
 
-本專案採用 [MIT License](LICENSE) 授權。
+```text
+查詢年月：2026/07
+新聞期間：3 個月
+實際日期：2026/05/01 ~ 2026/07/31
+```
+
+RSS query 會加日期條件，抓回資料後 Python 還會再依 `publish_date` 過濾一次。
+
+CLI：
+
+```powershell
+python main.py --company "9904 寶成" --year 2026 --month 7 --news-months 3
+```
+
+
+## v4 修正：歷史月份 / charset_normalizer
+
+若 v3 出現：
+
+```text
+module 'charset_normalizer' has no attribute 'detect'
+```
+
+原因不是公司或月份資料，而是 `requests.apparent_encoding` 觸發本機
+`charset_normalizer` 套件相依異常。
+
+v4 已完全移除 MOPS crawler 對 `apparent_encoding` 的使用：
+
+- 現行 MOPS 頁：UTF-8
+- 舊 MOPS fallback：CP950
+- requirements 釘住相容的 `requests` / `charset-normalizer`
+
+建議先修復既有虛擬環境：
+
+```powershell
+python -m pip install --upgrade --force-reinstall "requests>=2.32,<3" "charset-normalizer>=3.3,<4" html5lib lxml
+```
+
+再測歷史月份：
+
+```powershell
+python main.py --company "豐泰" --year 2026 --month 6
+python main.py --company "豐泰" --year 2026 --month 5
+python main.py --company "9904 寶成" --year 2026 --month 6
+```
+
+注意：TWSE `t187ap05_L` 只處理官方最新一期；歷史指定月份仍由 MOPS 現行單一公司頁處理。
+
+
+## v5 修正：MOPS 歷史月份改為 POST
+
+v4 的歷史月份仍以 GET 方式開啟 `t05st10_ifrs`，因此取得的是查詢表單頁，
+不是查詢結果頁，常見錯誤：
+
+```text
+No tables found
+```
+
+v5 改為：
+
+1. GET `t05st10_ifrs` 建立 session/cookie
+2. POST form data 至 `t05st10_ifrs`
+3. 若失敗再 POST `ajax_t05st10_ifrs`
+4. 最後才使用 legacy `/nas/t21/...`
+
+POST payload 包含：
+
+```text
+step=1
+firstin=1
+off=1
+queryName=co_id
+TYPEK=all
+isnew=false
+co_id=9910
+year=115
+month=06
+```
+
+解析不再依賴固定 table index，而是依：
+
+- 本月
+- 去年同期
+- 增減百分比
+- 本年累計
+- 去年累計
+- 累計增減百分比
+
+等欄位名稱抓取。
+
+測試：
+
+```powershell
+python main.py --company "豐泰" --year 2026 --month 6
+python main.py --company "豐泰" --year 2026 --month 5
+python main.py --company "9904 寶成" --year 2026 --month 6
+```
+
+
+## v6：歷史月份容錯 + 新聞排序
+
+### 月營收策略
+
+- 指定月份 = TWSE OpenAPI 最新月份：完整欄位
+- 指定月份 = 最新月份前一個月：
+  - 使用最新快照中的 `營業收入-上月營收`
+  - 僅回傳可確定的當月營收
+  - YoY / 累計欄位保持空值，不做推估
+- 更早月份：
+  - 再嘗試 MOPS POST 歷史查詢
+  - 若 MOPS 被安全機制阻擋，會明確回報來源限制
+
+此設計避免「歷史月份抓不到就整筆 revenue=null」。
+
+### 新聞排序
+
+Google News 抓回後先依 `publish_date` 由新到舊排序。
+
+Streamlit UI 可切換：
+
+- 最新 → 最舊
+- 最舊 → 最新
+
+
+## v7：完整歷史月營收改用 FinMind
+
+主來源改為 FinMind `TaiwanStockMonthRevenue`：
+
+- 歷史範圍：2002-02 ~ now
+- 上市 / 上櫃 / 興櫃
+- 指定股票代號 + 起訖日期
+- 可選 `FINMIND_TOKEN`
+
+### 完整欄位計算
+
+FinMind 提供每月 revenue，v7 會自行計算：
+
+- 當月營收
+- 上月營收
+- 去年當月營收
+- MoM
+- YoY
+- 當年累計營收
+- 去年同期累計營收
+- 累計 YoY
+
+因此不再依賴 MOPS HTML 版型取得歷史月份。
+
+### 資料來源優先順序
+
+1. FinMind historical
+2. TWSE OpenAPI latest snapshot
+3. MOPS fallback
+
+### 可選 Token
+
+PowerShell：
+
+```powershell
+$env:FINMIND_TOKEN="你的 token"
+python main.py --company "9904 寶成" --year 2026 --month 5
+```
+
+不設定 token 時也會先嘗試 Free API。
+
+### 測試
+
+```powershell
+python main.py --company "9904 寶成" --year 2026 --month 5
+python main.py --company "豐泰" --year 2026 --month 6
+python main.py --company "9904 寶成" --year 2025 --month 12
+```
+
+## v8：統一幣別與金額單位
+
+所有 `monthly_revenue` 金額欄位統一保存為：
+
+- `currency = TWD`
+- `amount_unit = TWD`
+- 金額單位 = 新台幣「元」
+
+### 為什麼舊資料看起來少 1000 倍？
+
+FinMind `TaiwanStockMonthRevenue.revenue` 是新台幣元；TWSE OpenAPI / MOPS 月營收原始數字則是新台幣千元。
+因此舊版直接混存時：
+
+- TWSE：`19,563,446`（千元）
+- FinMind：`21,701,839,000`（元）
+
+兩者其實是同一量級，只是單位差 1000。
+
+### 自動 migration
+
+第一次使用 v8 開啟既有 `data/company.db` 時會執行一次：
+
+1. 新增 `currency`, `amount_unit`, `source_type`, `previous_month_revenue`, `mom`
+2. 舊 TWSE / MOPS 金額欄位乘 1000，統一轉成 TWD 元
+3. FinMind 資料不乘 1000
+4. migration 記錄在 `schema_migrations`，不會重複執行
+
+不需要刪除既有 SQLite。
+
+
+## v9：查詢結果 / 歷史資料分頁
+
+Streamlit 畫面改成兩個 Tab：
+
+### 📊 查詢結果
+
+只顯示本次查詢：
+
+- 月營收
+- MoM / YoY
+- 累計營收
+- Google News
+
+### 🗄️ 歷史資料庫
+
+歷史資料獨立顯示，不再放在查詢結果頁最下方。
+
+左側「歷史資料篩選」可選：
+
+1. `同公司 + 同年月`
+   - 完全套用目前公司 / 年 / 月查詢條件。
+2. `同公司 + 同年度`
+   - 顯示該公司指定年度 1~12 月資料。
+3. `同公司全部`
+   - 顯示該公司 DB 中全部歷史月份。
+4. `全部資料`
+   - 不限制公司與年月。
+
+歷史資料表同樣使用：
+
+- 千分位金額
+- TWD 幣別
+- MoM / YoY %
+- 資料來源
+- 更新時間
+
+左側條件修改後，歷史 Tab 會同步重新篩選，不需要再次執行 crawler。
+
+
+## v10：顯示單位切換
+
+左側新增顯示單位：
+
+- 元
+- 千元（預設）
+- 百萬元
+- 億元
+
+SQLite 仍統一保存 `TWD 元`，只在 Streamlit 畫面換算。
+
+例如 DB 金額：
+
+```text
+6,720,476,000 TWD
+```
+
+顯示：
+
+```text
+元      → 6,720,476,000
+千元    → 6,720,476
+百萬元  → 6,720.48
+億元    → 67.20
+```
+
+查詢結果與歷史資料庫會使用同一個顯示單位。
+
+
+## v11：國際公司
+
+新增公司：
+
+### 華利集團
+- 股票：300979.SZ
+- 市場：中國深圳
+- 幣別：CNY
+- 財報來源：AKShare / Eastmoney
+- 支援：
+  - 損益表
+  - 資產負債表
+  - 現金流
+  - 最新已公布 Q1 / H1 / Q3 / FY
+
+### 寶勝國際
+- 股票：03813.HK
+- 市場：香港
+- 幣別：CNY
+- 月收益來源：Pou Sheng 官方 IR Monthly Revenue
+- DB 統一存 CNY 元
+
+測試：
+
+```powershell
+pip install -r requirements.txt
+
+python main.py --company "寶勝" --year 2026 --month 6
+python main.py --company "華利集團" --year 2026 --month 6
+
+streamlit run app.py
+```
+
+資料路由：
+
+```text
+台灣公司 -> FinMind -> TWSE -> MOPS
+寶勝國際 -> Pou Sheng IR Monthly Revenue
+華利集團 -> AKShare / Eastmoney Financial Statements
+所有公司 -> Google News RSS
+```
+
+
+## v12：Canonical Symbol + 四家國際公司
+
+### Canonical Symbol
+
+```text
+寶成       9904.TW
+九興       1836.HK
+華利集團   300979.SZ
+寶勝       3813.HK
+裕元       0551.HK
+```
+
+UI、Company Resolver、歷史資料會優先顯示 `symbol`。
+
+### 公司資料路由
+
+| 公司 | Symbol | 月營收 | 財報 |
+|---|---|---|---|
+| 寶成 | 9904.TW | FinMind / TWSE | - |
+| 九興 | 1836.HK | - | Yahoo Finance + Stella IR |
+| 華利 | 300979.SZ | - | AKShare/Eastmoney，Yahoo fallback |
+| 寶勝 | 3813.HK | Pou Sheng 官方 IR | Yahoo Finance |
+| 裕元 | 0551.HK | HKEX Monthly Revenue Announcement | Yahoo Finance |
+
+### 測試
+
+```powershell
+pip install -r requirements.txt
+
+python main.py --company "1836.HK" --year 2026 --month 6
+python main.py --company "300979.SZ" --year 2026 --month 6
+python main.py --company "3813.HK" --year 2026 --month 5
+python main.py --company "0551.HK" --year 2026 --month 5
+python main.py --company "9904.TW" --year 2026 --month 5
+
+streamlit run app.py
+```
+
+### 幣別
+
+DB 保存公司原始報告幣別的「元」：
+
+- TW：TWD
+- 華利：CNY
+- 寶勝：CNY
+- 裕元：USD
+- 九興：USD
+
+Streamlit 的「元 / 千元 / 百萬元 / 億元」只做顯示換算，不做跨幣別換匯。
+
+
+## v13：Official IR First + 公司下拉清單 + 同年月跨公司比較
+
+### 公司 / 股票代號
+
+改成下拉選單：
+
+- 寶成 9904.TW
+- 九興 1836.HK
+- 華利集團 300979.SZ
+- 寶勝 3813.HK
+- 裕元 0551.HK
+
+另提供「＋ 新增公司到選項清單」。
+
+新增內容會保存到：
+
+```text
+data/company_options.json
+```
+
+因此重新啟動 Streamlit 後仍會保留。
+
+### 歷史資料範圍
+
+新增：
+
+```text
+所有公司 + 同年月
+```
+
+例如選 2026 / 05，會顯示所有公司在 2026/05 的月營收資料。
+
+### 裕元資料來源優先順序
+
+```text
+Yue Yuen 官方 IR
+    ↓
+HKEX fallback
+    ↓
+Yahoo Finance 財報 fallback
+```
+
+官方來源：
+
+```text
+https://www.yueyuen.com/tc/reports_announcement.html#monthly_revenue
+```
+
+### 裕元新聞降噪
+
+Google News 查詢自動排除：
+
+- 酒店
+- 花園酒店
+- 餐廳
+- 粽
+- 下午茶
+- 龍蝦
+- 合唱
+
+避免「裕元花園酒店」干擾裕元工業公司情報。
+
+
+## v14：Yue Yuen 官方網站 Browser Fallback
+
+裕元官方 Monthly Revenue 頁面可能使用 JavaScript / AJAX 動態載入，
+一般 `requests` 可能得到 403 或不含表格的 HTML。
+
+v14 流程：
+
+```text
+requests
+   ↓ 找不到完整 table / 403
+Playwright Chromium
+   ↓
+等待頁面 JS 載入
+   ↓
+選指定年度
+   ↓
+解析瀏覽器實際看到的 Monthly Revenue table
+```
+
+解析欄位：
+
+- 綜合經營收益 / 單月營收
+- 綜合經營收益 / 累計營收
+- 綜合經營收益 / 單月同比
+- 綜合經營收益 / 累計同比
+
+原始金額按 USD'000 轉為 USD 元寫入 DB。
+
+### 首次安裝
+
+```powershell
+pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+之後：
+
+```powershell
+python main.py --company "0551.HK" --year 2026 --month 7
+streamlit run app.py
+```
+
+同時將 Streamlit metric 數值字體縮小至 1.85rem，
+降低大型累計營收被截斷的情況。
+
+
+## v15：Yue Yuen rendered DIV/grid parser
+
+v14 已確認 Playwright 可以開啟裕元官網，但該頁月營收畫面不是標準
+`<table>`，而是前端以 DIV/grid 方式呈現。
+
+v15 不再依賴 `<table>`：
+1. Playwright 開啟裕元官方 IR。
+2. 選擇指定年份。
+3. 找月份文字節點（例如 `7`）。
+4. 沿 DOM ancestor 找「該月份的一整列 rendered row」。
+5. 依官方欄位順序解析：
+   - 單月營收
+   - 累計營收
+   - 單月同比
+   - 累計同比
+6. 金額從 USD'000 換算成 USD 元寫入 SQLite。
+
+以 2026/07 官方畫面為例，應解析：
+- 單月營收：602,614
+- 累計營收：4,576,687
+- 單月同比：-9.7%
+- 累計同比：-3.2%
+
+若 DOM 再次改版而解析失敗，會自動寫出：
+- `data/debug/yueyuen_body.txt`
+- `data/debug/yueyuen_page.html`
+
+方便下一步直接依實際 DOM 修 selector。
+
+另外，裕元 Google News 增加「query 排除 + Python title hard filter」雙層降噪，
+排除裕元花園酒店、裕元獎、餐飲/合唱等非裕元工業公司情報。
