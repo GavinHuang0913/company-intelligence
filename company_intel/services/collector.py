@@ -1,7 +1,8 @@
 from __future__ import annotations
 from ..config import Settings
 from ..db import (
-    connect, upsert_company, upsert_revenue, upsert_news, upsert_financial_report
+    connect, upsert_company, upsert_revenue, upsert_news, upsert_financial_report,
+    backfill_revenue_metrics, refresh_revenue_row_from_db
 )
 from ..crawlers.finmind import fetch_month_revenue_history
 from ..crawlers.mops_monthly import fetch_monthly_revenue
@@ -118,30 +119,33 @@ def collect(
 
             # ---------------- Yue Yuen ----------------
             elif profile == "hk_yueyuen":
-                # 1. 公司官方 IR
+                # 1. Yue Yuen Official IR via real Google Chrome
                 try:
                     rev = fetch_yueyuen_official_monthly_revenue(
                         year, month, settings
                     )
                     result["revenue"] = rev
                     result["revenue_source"] = "Yue Yuen Official IR"
+                    result["official_ir_url"] = company.get("official_url")
                     upsert_revenue(conn, rev)
                 except Exception as e:
                     result["warnings"].append(f"裕元官方 IR：{e}")
 
-                # 2. HKEX fallback
+                # 2. HKEX formal filing fallback
                 if result["revenue"] is None:
                     try:
                         rev = fetch_yueyuen_monthly_revenue(
                             year, month, settings
                         )
+                        rev["official_ir_url"] = company.get("official_url")
                         result["revenue"] = rev
-                        result["revenue_source"] = "HKEX"
+                        result["revenue_source"] = "HKEX (Official Filing)"
+                        result["official_ir_url"] = company.get("official_url")
                         upsert_revenue(conn, rev)
                     except Exception as e:
-                        result["warnings"].append(f"裕元 HKEX fallback：{e}")
+                        result["warnings"].append(f"裕元 HKEX：{e}")
 
-                # 3. 財報 fallback
+                # 3. financial statement fallback
                 try:
                     fin = _financial_fallback(company, year, month)
                     result["financial_report"] = fin
@@ -149,7 +153,6 @@ def collect(
                     upsert_financial_report(conn, fin)
                 except Exception as e:
                     result["warnings"].append(f"裕元財報 fallback：{e}")
-
             # ---------------- Stella ----------------
             elif profile == "hk_financial":
                 try:
@@ -178,6 +181,34 @@ def collect(
                         upsert_financial_report(conn, fin)
                     except Exception as e2:
                         result["errors"].append(f"華利財報：{e2}")
+
+        # --------------------------------------------------------
+        # Monthly revenue history enrichment
+        # 用 SQLite 既有月份補上上月/去年同期與衍生百分比。
+        # 僅補 NULL，不覆蓋官方來源已提供的值。
+        # --------------------------------------------------------
+        if result.get("revenue"):
+            try:
+                stock_id = result["revenue"].get("stock_id") or company["stock_id"]
+
+                # 確保本次來源資料已寫入 DB
+                upsert_revenue(conn, result["revenue"])
+
+                filled_rows = backfill_revenue_metrics(conn, stock_id)
+
+                # 本次 CLI / UI 立即取得補算結果
+                result["revenue"] = refresh_revenue_row_from_db(
+                    conn, result["revenue"]
+                )
+
+                if filled_rows:
+                    result["history_backfill"] = {
+                        "stock_id": stock_id,
+                        "updated_rows": filled_rows,
+                        "rule": "SQLite existing monthly history; fill NULL only",
+                    }
+            except Exception as e:
+                result["warnings"].append(f"歷史月營收補算：{e}")
 
         if fetch_google_news:
             try:

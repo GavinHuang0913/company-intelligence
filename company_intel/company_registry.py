@@ -67,7 +67,7 @@ INTERNATIONAL_COMPANIES = [
         ],
         "news_keywords": ["裕元", "裕元工業", "Yue Yuen", "0551"],
         "data_profile": "hk_yueyuen",
-        "official_url": "https://www1.hkexnews.hk/search/titlesearch.xhtml?category=0&market=SEHK&stockId=1172",
+        "official_url": "https://www.yueyuen.com/tc/reports_announcement.html#monthly_revenue",
     },
 ]
 

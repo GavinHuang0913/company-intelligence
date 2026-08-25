@@ -705,3 +705,116 @@ v15 不再依賴 `<table>`：
 
 另外，裕元 Google News 增加「query 排除 + Python title hard filter」雙層降噪，
 排除裕元花園酒店、裕元獎、餐飲/合唱等非裕元工業公司情報。
+
+
+## v16：Yue Yuen 官方 IR 驗證 + HKEX 正式資料來源
+
+實測 debug：
+
+- `requests`：403 Forbidden
+- Playwright headless：整頁仍為 403 Forbidden
+- 因此不是 DOM selector 問題，而是官網伺服器阻擋程式化存取。
+
+v16 調整：
+
+```text
+0551.HK 裕元
+├─ 數值來源：HKEX Monthly Revenue Announcement
+└─ 公司 IR：Yue Yuen Monthly Revenue（提供連結交叉驗證）
+```
+
+這不是降級資料品質。HKEX 是上市公司正式公告來源，而且目前抓到的月營收與
+Yue Yuen 官網顯示值一致。
+
+例如 2026/07：
+
+- 單月營收：602,614 (USD'000)
+- 累計營收：4,576,687 (USD'000)
+
+SQLite 仍保存為：
+
+- 602,614,000 USD
+- 4,576,687,000 USD
+
+
+## v17：Yue Yuen Real Chrome Official IR
+
+由 Chrome DevTools 實際確認官方 DOM：
+
+```css
+#monthly_revenue table.primary-table.type-1
+```
+
+人工 Chrome 可正常取得資料；requests 與 headless Playwright 會收到 403。
+
+v17 改為：
+
+1. Playwright 使用本機 `Google Chrome` (`channel="chrome"`)
+2. `headless=False`
+3. persistent profile: `data/yueyuen-chrome-profile`
+4. 等待：
+   `#monthly_revenue table.primary-table.type-1`
+5. 直接解析 `tbody > tr`
+6. 官方來源失敗才 fallback HKEX
+
+測試：
+
+```cmd
+.venv\Scripts\python.exe main.py --company "0551.HK" --year 2026 --month 7
+```
+
+成功時：
+
+```text
+revenue_source = Yue Yuen Official IR
+source_type = yueyuen_official_ir_monthly
+```
+
+第一次測試會自動開啟一個 Google Chrome 視窗，這是預期行為。
+
+
+## v18：SQLite 歷史月營收自動補算
+
+當來源只提供部分欄位時，使用同公司 SQLite 既有月營收資料補齊。
+
+### 補算規則
+
+```text
+上月營收
+= 前一個曆月 revenue
+
+去年同月
+= year - 1、相同 month 的 revenue
+
+MoM
+= (本月營收 / 上月營收 - 1) × 100
+
+YoY
+= (本月營收 / 去年同月 - 1) × 100
+
+去年同期累計
+= 去年相同月份 accumulated_revenue
+
+累計 YoY
+= (本年累計 / 去年同期累計 - 1) × 100
+```
+
+### 安全原則
+
+只補 `NULL` 欄位。
+
+如果官方來源本身已提供：
+- YoY
+- 累計 YoY
+- 上月營收
+- 去年同月
+
+則保留官方數值，不覆寫。
+
+### 整批回填
+
+每次查詢有取得月營收後，會對該公司 DB 中既有月份進行一次 backfill，
+所以不只是本次查詢月份，歷史頁的舊資料也會逐步補完整。
+
+例如裕元已有 2025/01 ~ 2026/07：
+查詢 2026/07 後，2026 各月可自動利用 2025 同月與前一個月資料補算。

@@ -259,6 +259,213 @@ def upsert_revenue(conn, row: dict) -> None:
     conn.commit()
 
 
+
+def backfill_revenue_metrics(conn, stock_id: str) -> int:
+    """
+    用同一公司 SQLite 既有月營收歷史補齊衍生欄位。
+
+    原則：
+    - 僅補 NULL，不覆蓋資料來源已提供的值。
+    - previous_month_revenue = 前一個曆月 revenue
+    - revenue_last_year = 去年同月 revenue
+    - mom = (本月 / 上月 - 1) * 100
+    - yoy = (本月 / 去年同月 - 1) * 100
+    - accumulated_last_year = 去年同月 accumulated_revenue
+    - accumulated_yoy = (本年累計 / 去年同期累計 - 1) * 100
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            year, month, revenue,
+            previous_month_revenue,
+            revenue_last_year,
+            mom, yoy,
+            accumulated_revenue,
+            accumulated_last_year,
+            accumulated_yoy
+        FROM monthly_revenue
+        WHERE stock_id = ?
+        ORDER BY year, month
+        """,
+        (stock_id,),
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    # sqlite Row or tuple compatibility
+    cols = [
+        "year", "month", "revenue",
+        "previous_month_revenue", "revenue_last_year",
+        "mom", "yoy",
+        "accumulated_revenue", "accumulated_last_year",
+        "accumulated_yoy",
+    ]
+
+    data = []
+    for row in rows:
+        if hasattr(row, "keys"):
+            item = {k: row[k] for k in cols}
+        else:
+            item = dict(zip(cols, row))
+        data.append(item)
+
+    by_period = {
+        (int(r["year"]), int(r["month"])): r
+        for r in data
+    }
+
+    updated = 0
+
+    for r in data:
+        year = int(r["year"])
+        month = int(r["month"])
+        revenue = r["revenue"]
+
+        if month == 1:
+            prev_key = (year - 1, 12)
+        else:
+            prev_key = (year, month - 1)
+
+        last_year_key = (year - 1, month)
+
+        prev = by_period.get(prev_key)
+        last_year = by_period.get(last_year_key)
+
+        values = {}
+
+        # 上月營收
+        if r["previous_month_revenue"] is None and prev and prev["revenue"] is not None:
+            values["previous_month_revenue"] = prev["revenue"]
+
+        # 去年同月
+        if r["revenue_last_year"] is None and last_year and last_year["revenue"] is not None:
+            values["revenue_last_year"] = last_year["revenue"]
+
+        effective_prev = (
+            r["previous_month_revenue"]
+            if r["previous_month_revenue"] is not None
+            else values.get("previous_month_revenue")
+        )
+        effective_last_year = (
+            r["revenue_last_year"]
+            if r["revenue_last_year"] is not None
+            else values.get("revenue_last_year")
+        )
+
+        # MoM
+        if (
+            r["mom"] is None
+            and revenue is not None
+            and effective_prev not in (None, 0)
+        ):
+            values["mom"] = (float(revenue) / float(effective_prev) - 1.0) * 100.0
+
+        # YoY：來源有值則保留；缺值才補算
+        if (
+            r["yoy"] is None
+            and revenue is not None
+            and effective_last_year not in (None, 0)
+        ):
+            values["yoy"] = (
+                float(revenue) / float(effective_last_year) - 1.0
+            ) * 100.0
+
+        # 去年同期累計
+        if (
+            r["accumulated_last_year"] is None
+            and last_year
+            and last_year["accumulated_revenue"] is not None
+        ):
+            values["accumulated_last_year"] = last_year["accumulated_revenue"]
+
+        effective_acc_last_year = (
+            r["accumulated_last_year"]
+            if r["accumulated_last_year"] is not None
+            else values.get("accumulated_last_year")
+        )
+
+        # 累計 YoY：來源有值則保留；缺值才補算
+        if (
+            r["accumulated_yoy"] is None
+            and r["accumulated_revenue"] is not None
+            and effective_acc_last_year not in (None, 0)
+        ):
+            values["accumulated_yoy"] = (
+                float(r["accumulated_revenue"])
+                / float(effective_acc_last_year)
+                - 1.0
+            ) * 100.0
+
+        if not values:
+            continue
+
+        assignments = ", ".join(f"{k} = ?" for k in values)
+        params = list(values.values()) + [stock_id, year, month]
+
+        conn.execute(
+            f"""
+            UPDATE monthly_revenue
+            SET {assignments}
+            WHERE stock_id = ? AND year = ? AND month = ?
+            """,
+            params,
+        )
+        updated += 1
+
+    if updated:
+        conn.commit()
+
+    return updated
+
+
+def refresh_revenue_row_from_db(conn, row: dict) -> dict:
+    """
+    backfill 後重新讀取該年月，讓 CLI / Streamlit 當次結果也立即帶出補算欄位。
+    """
+    stock_id = row.get("stock_id")
+    year = row.get("year")
+    month = row.get("month")
+    if not stock_id or year is None or month is None:
+        return row
+
+    db_row = conn.execute(
+        """
+        SELECT
+            previous_month_revenue,
+            revenue_last_year,
+            mom,
+            yoy,
+            accumulated_last_year,
+            accumulated_yoy
+        FROM monthly_revenue
+        WHERE stock_id = ? AND year = ? AND month = ?
+        """,
+        (stock_id, int(year), int(month)),
+    ).fetchone()
+
+    if not db_row:
+        return row
+
+    fields = [
+        "previous_month_revenue",
+        "revenue_last_year",
+        "mom",
+        "yoy",
+        "accumulated_last_year",
+        "accumulated_yoy",
+    ]
+
+    for field in fields:
+        try:
+            value = db_row[field]
+        except Exception:
+            value = db_row[fields.index(field)]
+        if row.get(field) is None and value is not None:
+            row[field] = value
+
+    return row
+
 def upsert_news(conn, rows: Iterable[dict]) -> int:
     count = 0
     for row in rows:

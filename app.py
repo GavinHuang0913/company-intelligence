@@ -510,6 +510,12 @@ with tab_query:
         if not rev and not fin:
             st.warning("本次沒有取得任何財務資料。")
 
+        if comp.get("symbol") == "0551.HK" and result.get("revenue"):
+            st.info(
+                "裕元公司官網目前會阻擋程式化存取（403）；"
+                "因此數值採 HKEX 正式每月收益公告，並提供公司 IR 連結供交叉驗證。"
+            )
+
         st.divider()
 
         news = result.get("news", [])
